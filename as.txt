@@ -1,0 +1,3 @@
+areeejfatima55_db_user
+CFWd896htm9SaiBZ
+mongodb+srv://areeejfatima55_db_user:CFWd896htm9SaiBZ@pyschai.uhwbchq.mongodb.net/?appName=Pyschai
