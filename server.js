@@ -9,6 +9,12 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const nodemailer = require('nodemailer');
 const PDFDocument = require('pdfkit');
+try {
+  require('pdfkit/standard-fonts/Helvetica');
+  require('pdfkit/standard-fonts/HelveticaBold');
+  require('pdfkit/standard-fonts/HelveticaOblique');
+  require('pdfkit/standard-fonts/HelveticaBoldOblique');
+} catch (e) {}
 const helmet = require('helmet');
 
 const {
@@ -34,10 +40,15 @@ app.use(helmet({
 app.use(cors());
 app.use(express.json());
 
-// Set up Multer for temporary file processing
-const uploadsDir = path.join(__dirname, 'temp_uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+// Set up Multer for temporary file processing (Use os.tmpdir() for Vercel/Lambda serverless compatibility)
+const os = require('os');
+const uploadsDir = path.join(os.tmpdir(), 'psych_ai_temp_uploads');
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch (e) {
+  console.warn("Temp upload dir note:", e.message);
 }
 const upload = multer({ dest: uploadsDir });
 
@@ -232,18 +243,50 @@ let inMemorySessions = [
 // ==========================================
 // 1. MONGODB DATABASE CONFIGURATION
 // ==========================================
-const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://areeejfatima55_db_user:CFWd896htm9SaiBZ@pyschai.uhwbchq.mongodb.net/?appName=Pyschai';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://areeejfatima55_db_user:hanny12344321@pyschai.uhwbchq.mongodb.net/psychai?appName=Pyschai';
 let isDbConnected = false;
 
-mongoose.connect(MONGO_URI)
-  .then(() => {
+let cached = global.mongoose;
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
+}
+
+async function connectToMongo() {
+  if (mongoose.connection.readyState === 1) {
     isDbConnected = true;
-    console.log('🍃 MongoDB Connected Successfully.');
-  })
-  .catch(err => {
+    return mongoose.connection;
+  }
+
+  if (!cached.promise) {
+    const opts = {
+      serverSelectionTimeoutMS: 5000,
+    };
+    cached.promise = mongoose.connect(MONGODB_URI, opts).then(m => {
+      isDbConnected = true;
+      console.log('🍃 MongoDB Connected Successfully.');
+      return m;
+    }).catch(err => {
+      cached.promise = null;
+      isDbConnected = false;
+      console.error('⚠️ MongoDB Connection Note (using in-memory resilience store):', err.message);
+      throw err;
+    });
+  }
+
+  try {
+    cached.conn = await cached.promise;
+    isDbConnected = (mongoose.connection.readyState === 1);
+  } catch (err) {
+    cached.promise = null;
     isDbConnected = false;
-    console.error('⚠️ MongoDB Connection Note (using in-memory resilience store):', err.message);
-  });
+    throw err;
+  }
+
+  return cached.conn;
+}
+
+// Initial background connection attempt
+connectToMongo().catch(() => {});
 
 const sessionSchema = new mongoose.Schema({
   name: { type: String, default: 'Anonymous Case' },
@@ -325,17 +368,43 @@ async function logAuditTrail({ req, action, clinicianEmail, clinicianName, clini
   }
 }
 
+// Serverless DB Connection Assurance Middleware
+app.use(async (req, res, next) => {
+  if (mongoose.connection.readyState !== 1) {
+    try {
+      await connectToMongo();
+    } catch (e) {
+      // Resilience fallback will handle it
+    }
+  }
+  isDbConnected = (mongoose.connection.readyState === 1);
+  next();
+});
+
 // ==========================================
 // 2. REST API ROUTES
 // ==========================================
 
 // Health Check
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+  let dbError = null;
+  if (mongoose.connection.readyState !== 1) {
+    try {
+      await connectToMongo();
+    } catch (e) {
+      dbError = e.message;
+    }
+  }
+
+  const connected = mongoose.connection.readyState === 1;
+
   res.json({
     service: "Psych.ai Express Core Gateway",
     status: "active",
     port: PORT,
-    database_connected: isDbConnected,
+    database_connected: connected,
+    db_state: mongoose.connection.readyState,
+    ...(dbError ? { db_error: dbError } : {}),
     python_engine: PYTHON_ENGINE_URL,
     hipaa_compliance: {
       encryption: "AES-256-GCM Active",
@@ -1014,10 +1083,10 @@ function generatePdfReportBuffer(session, clinicianName, userRole, userLicense, 
   });
 }
 
-// PDF Download Direct Endpoint
+// PDF Download Direct Endpoint (Supports binary stream and JSON Base64 for mobile)
 app.post('/api/reports/download-pdf', async (req, res) => {
   try {
-    const { session, clinicianName, clinicianRole, clinicianLicense, institution } = req.body;
+    const { session, clinicianName, clinicianRole, clinicianLicense, institution, format } = req.body;
     
     await logAuditTrail({
       req,
@@ -1039,11 +1108,21 @@ app.post('/api/reports/download-pdf', async (req, res) => {
     );
 
     const filename = `PsychAI_Report_${(session?.name || 'Patient').replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+    
+    if (format === 'base64' || req.query.format === 'base64') {
+      return res.status(200).json({
+        success: true,
+        filename,
+        base64: pdfBuffer.toString('base64'),
+        size: pdfBuffer.length
+      });
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.status(200).send(pdfBuffer);
   } catch (err) {
-    console.error("PDF generation error:", err);
+    console.error("❌ PDF Generation Error:", err);
     res.status(500).json({ error: "Failed to generate PDF.", details: err.message });
   }
 });
@@ -1342,4 +1421,4 @@ if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
 
 // Export for Vercel Serverless Functions & Unit Tests
 module.exports = app;
-module.exports.handler = serverless(app);
+module.exports.handler = serverless(app);
