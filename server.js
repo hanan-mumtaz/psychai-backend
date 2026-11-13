@@ -243,7 +243,7 @@ let inMemorySessions = [
 // ==========================================
 // 1. MONGODB DATABASE CONFIGURATION
 // ==========================================
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://areeejfatima55_db_user:hanny12344321@pyschai.uhwbchq.mongodb.net/?appName=Pyschai';
+const MONGODB_URI = process.env.MONGODB_URI;
 let isDbConnected = false;
 
 mongoose.connect(MONGODB_URI)
