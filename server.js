@@ -243,50 +243,18 @@ let inMemorySessions = [
 // ==========================================
 // 1. MONGODB DATABASE CONFIGURATION
 // ==========================================
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://areeejfatima55_db_user:hanny12344321@pyschai.uhwbchq.mongodb.net/psychai?appName=Pyschai';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://areeejfatima55_db_user:hanny12344321@pyschai.uhwbchq.mongodb.net/?appName=Pyschai';
 let isDbConnected = false;
 
-let cached = global.mongoose;
-if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null };
-}
-
-async function connectToMongo() {
-  if (mongoose.connection.readyState === 1) {
+mongoose.connect(MONGODB_URI)
+  .then(() => {
     isDbConnected = true;
-    return mongoose.connection;
-  }
-
-  if (!cached.promise) {
-    const opts = {
-      serverSelectionTimeoutMS: 5000,
-    };
-    cached.promise = mongoose.connect(MONGODB_URI, opts).then(m => {
-      isDbConnected = true;
-      console.log('🍃 MongoDB Connected Successfully.');
-      return m;
-    }).catch(err => {
-      cached.promise = null;
-      isDbConnected = false;
-      console.error('⚠️ MongoDB Connection Note (using in-memory resilience store):', err.message);
-      throw err;
-    });
-  }
-
-  try {
-    cached.conn = await cached.promise;
-    isDbConnected = (mongoose.connection.readyState === 1);
-  } catch (err) {
-    cached.promise = null;
+    console.log('🍃 MongoDB Connected Successfully.');
+  })
+  .catch(err => {
     isDbConnected = false;
-    throw err;
-  }
-
-  return cached.conn;
-}
-
-// Initial background connection attempt
-connectToMongo().catch(() => {});
+    console.error('⚠️ MongoDB Connection Note (using in-memory resilience store):', err.message);
+  });
 
 const sessionSchema = new mongoose.Schema({
   name: { type: String, default: 'Anonymous Case' },
@@ -368,43 +336,17 @@ async function logAuditTrail({ req, action, clinicianEmail, clinicianName, clini
   }
 }
 
-// Serverless DB Connection Assurance Middleware
-app.use(async (req, res, next) => {
-  if (mongoose.connection.readyState !== 1) {
-    try {
-      await connectToMongo();
-    } catch (e) {
-      // Resilience fallback will handle it
-    }
-  }
-  isDbConnected = (mongoose.connection.readyState === 1);
-  next();
-});
-
 // ==========================================
 // 2. REST API ROUTES
 // ==========================================
 
 // Health Check
-app.get('/', async (req, res) => {
-  let dbError = null;
-  if (mongoose.connection.readyState !== 1) {
-    try {
-      await connectToMongo();
-    } catch (e) {
-      dbError = e.message;
-    }
-  }
-
-  const connected = mongoose.connection.readyState === 1;
-
+app.get('/', (req, res) => {
   res.json({
     service: "Psych.ai Express Core Gateway",
     status: "active",
     port: PORT,
-    database_connected: connected,
-    db_state: mongoose.connection.readyState,
-    ...(dbError ? { db_error: dbError } : {}),
+    database_connected: isDbConnected,
     python_engine: PYTHON_ENGINE_URL,
     hipaa_compliance: {
       encryption: "AES-256-GCM Active",
